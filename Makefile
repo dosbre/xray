@@ -2,7 +2,7 @@ CC = gcc
 
 CFLAGS = -std=c89 -Wall -pedantic
 
-LDFLAGS = -lxcb -lxcb-damage -lxcb-composite
+LDFLAGS = -lxcb -lxcb-damage -lxcb-xfixes -lxcb-composite
 
 TARGET = xray
 
