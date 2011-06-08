@@ -1,20 +1,26 @@
-CC = gcc
+include config.mk
 
-CFLAGS = -std=c89 -Wall -pedantic
+all: xray
+	@mkdir -p ./bin
+	@mv xray ./bin
 
-LDFLAGS = -lxcb -lxcb-damage -lxcb-xfixes -lxcb-composite
+xray: xray.o util.o event.o
 
-TARGET = xray
-
-all: $(TARGET)
-
-$(TARGET): xray.o
-
-xray.o: xray.c xray.h
+xray.o: xray.h
 
 clean:
 	@echo cleaning
-	@rm -f $(TARGET) xray.o
+	@rm -f ./bin/xray xray.o event.o util.o
+	@rmdir ./bin
 
-.PHONY: all clean
+install: all
+	@echo installing executable file to ${PREFIX}/bin
+	@mkdir -p ${PREFIX}/bin
+	@cp -f ./bin/xray ${PREFIX}/bin
+
+uninstall:
+	@echo removing executable file from ${PREFIX}/bin
+	@rm ${PREFIX}/bin/xray
+
+.PHONY: all clean install uninstall
 

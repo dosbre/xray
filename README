@@ -1,0 +1,27 @@
+xray
+====
+ xray is a X composite manager which provides translucent windows.
+
+
+Requirements
+------------
+ XCB headers
+
+
+Installation
+------------
+ Edit config.mk to match your local setup (installed into the /usr/local
+ namespace by default).
+
+ Afterwards enter the following command to build and install (if necessary as
+ root):
+
+	make clean install
+
+
+TODO
+----
+ In order of priority:
+	* Independent window opacity (OPACITY_PROP atom)
+	* Preserve the root window background
+
