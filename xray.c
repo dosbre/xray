@@ -11,7 +11,6 @@
 
 xcb_connection_t *X;
 struct root *root;
-struct window *window_list;
 xcb_generic_error_t *error;
 
 uint8_t pict_rgb_24;
@@ -49,12 +48,10 @@ static void init_extensions(void)
 	xcb_xfixes_query_version_cookie_t xfixes_ck;
 	xcb_damage_query_version_cookie_t damage_ck;
 	xcb_composite_query_version_cookie_t composite_ck;
-
 	xcb_render_query_version_reply_t *render_r;
 	xcb_xfixes_query_version_reply_t *xfixes_r;
 	xcb_damage_query_version_reply_t *damage_r;
 	xcb_composite_query_version_reply_t *composite_r;
-
 	const xcb_query_extension_reply_t *extr;
 
 	render_ck = xcb_render_query_version_unchecked(X, 0, 11);
@@ -64,38 +61,41 @@ static void init_extensions(void)
 
 	render_r = xcb_render_query_version_reply(X, render_ck, NULL);
 	extr = xcb_get_extension_data(X, &xcb_render_id);
-	debugf("render: opcode=%hu, event=%hu, error=%hu\n",
+	debugf("render %u.%u: opcode=%hu, event=%hu, error=%hu\n",
+		render_r->major_version, render_r->minor_version,
 		extr->major_opcode, extr->first_event, extr->first_error);
+
 	xfixes_r = xcb_xfixes_query_version_reply(X, xfixes_ck, NULL);
 	extr = xcb_get_extension_data(X, &xcb_xfixes_id);
-	debugf("xfixes: opcode=%hu, event=%hu, error=%hu\n",
+	debugf("xfixes %u.%u: opcode=%hu, event=%hu, error=%hu\n",
+		xfixes_r->major_version, xfixes_r->minor_version,
 		extr->major_opcode, extr->first_event, extr->first_error);
+
 	damage_r = xcb_damage_query_version_reply(X, damage_ck, NULL);
 	extr = xcb_get_extension_data(X, &xcb_damage_id);
 	damage_event = extr->first_event;
-	debugf("damage: opcode=%hu, event=%hu, error=%hu\n",
+	debugf("damage %u.%u: opcode=%hu, event=%hu, error=%hu\n",
+		damage_r->major_version, damage_r->minor_version,
 		extr->major_opcode, extr->first_event, extr->first_error);
+
 	composite_r = xcb_composite_query_version_reply(X, composite_ck, NULL);
 	extr = xcb_get_extension_data(X, &xcb_composite_id);
-	debugf("composite: opcode=%hu, event=%hu, error=%hu\n",
+	debugf("composite %u.%u: opcode=%hu, event=%hu, error=%hu\n",
+		composite_r->major_version, composite_r->minor_version,
 		extr->major_opcode, extr->first_event, extr->first_error);
+	free(render_r);
+	free(xfixes_r);
+	free(damage_r);
+	free(composite_r);
 }
 
 static int redirect_subwindows(xcb_window_t wid)
 {
-	uint8_t up;
 	xcb_void_cookie_t ck;
 
-	/*
-	up = XCB_COMPOSITE_REDIRECT_AUTOMATIC;
-	*/
-	up = XCB_COMPOSITE_REDIRECT_MANUAL;
-	ck = xcb_composite_redirect_subwindows_checked(X, wid, up);
-	if (check_cookie(ck)) {
-		fprintf(stderr, "can't redirect subwindows\n");
-		return -1;
-	}
-	return 0;
+	ck = xcb_composite_redirect_subwindows_checked(X, wid,
+						XCB_COMPOSITE_REDIRECT_MANUAL);
+	return check_cookie(ck);
 }
 
 static int set_root_event_mask(xcb_window_t wid)
@@ -151,13 +151,28 @@ int paint_background(struct root *r)
 	return 0;
 }
 
+static int scan_children(xcb_window_t wid, struct window **list)
+{
+	struct window *win;
+	xcb_query_tree_reply_t *r;
+	xcb_window_t *widv;
+	int len;
+	int ret;
+
+	r = xcb_query_tree_reply(X, xcb_query_tree(X, root->id), NULL);
+	widv = xcb_query_tree_children(r);
+	len = xcb_query_tree_children_length(r);
+	ret = add_winvec(list, widv, len);
+	free(r);
+	return ret;
+}
+
 static int setup_root(xcb_screen_t *s, struct root *r)
 {
 	r->id = s->root;
 	r->depth = s->root_depth;
 	r->width = s->width_in_pixels;
 	r->height = s->height_in_pixels;
-
 	if (redirect_subwindows(r->id) != 0)
 		return -1;
 	set_root_event_mask(r->id);
@@ -180,141 +195,9 @@ static int setup_root(xcb_screen_t *s, struct root *r)
 				0, 0, 0, 0, r->width, r->height);
 	}
 	root->damaged = 0;
-	return 0;
-}
-
-struct window *add_window(xcb_window_t wid, uint8_t map,
-							xcb_rectangle_t geom)
-{
-	struct window *win;
-	uint8_t opt;
-
-	win = malloc(sizeof(struct window));
-	if (!win) {
-		debugf("can't alloc window %u\n", wid);
-		return NULL;
-	}
-	printf("added window %u to stack; map=%u\n", wid, map);
-	{
-		uint32_t val[1] = { XCB_EVENT_MASK_VISIBILITY_CHANGE };
-
-		xcb_configure_window(X, wid, XCB_CW_EVENT_MASK, val);
-	}
-	win->id = wid;
-	win->map_state = map;
-	win->geometry = geom;
-	if (map != XCB_MAP_STATE_UNMAPPED) {
-		win->pixmap = xcb_generate_id(X);
-		xcb_composite_name_window_pixmap(X, wid, win->pixmap);
-		win->picture = xcb_generate_id(X);
-		xcb_render_create_picture(X, win->picture, win->pixmap,
-							pict_rgb_24, 0, NULL);
-	} else {
-		win->pixmap = XCB_PIXMAP_NONE;
-		win->picture = XCB_RENDER_PICTURE_NONE;
-	}
-	win->damage = xcb_generate_id(X);
-	opt = XCB_DAMAGE_REPORT_LEVEL_NON_EMPTY;
-	xcb_damage_create(X, win->damage, wid, opt);
-	win->region = xcb_generate_id(X);
-	opt = XCB_SHAPE_SK_BOUNDING;
-	xcb_xfixes_create_region_from_window(X, win->region, wid, opt);
-	win->next = window_list;
-	if (window_list)
-		window_list->prev = win;
-	win->prev = NULL;
-	window_list = win;
-	xcb_flush(X);
-	return win;
-}
-
-struct window *find_window(xcb_window_t wid)
-{
-	struct window *win;
-
-	for (win = window_list; win; win = win->next)
-		if (win->id == wid)
-			break;
-	return win;
-}
-
-int remove_window(struct window *win)
-{
-	struct window **prev;
-
-	if (win->pixmap != XCB_PIXMAP_NONE)
-		xcb_free_pixmap(X, win->pixmap);
-	if (win->picture != XCB_RENDER_PICTURE_NONE)
-		xcb_render_free_picture(X, win->picture);
-	xcb_damage_destroy(X, win->damage);
-	xcb_xfixes_destroy_region(X, win->region);
-
-	for (prev = &window_list; *prev != NULL; prev = &(*prev)->next)
-		if ((*prev)->id == win->id)
-			break;
-	*prev = win->next;
-	debugf("window %u removed from stack\n", win->id);
-	free(win);
-	return 0;
-}
-
-void restack_window(struct window *win, xcb_window_t wid)
-{
-	xcb_window_t old;
-	struct window **prev;
-
-	old = (win->next) ? win->next->id : XCB_WINDOW_NONE;
-	if (old != wid) {
-		for (prev = &window_list; *prev; prev = &(*prev)->next)
-			if ((*prev) == win)
-				break;
-		*prev = win->next;
-		for (prev = &window_list; *prev; prev = &(*prev)->next)
-			if ((*prev)->id == wid)
-				break;
-		win->next = *prev;
-		*prev = win;
-	}
-}
-
-static int add_tree(xcb_window_t *wid, int len)
-{
-	xcb_get_window_attributes_cookie_t *ack;
-	xcb_get_geometry_cookie_t *gck;
-	int i;
-
-	ack = malloc(sizeof(ack) * len);
-	if (!ack)
-		return -1;
-	gck = malloc(sizeof(gck) * len);
-	if (!gck) {
-		free(ack);
-		return -1;
-	}
-	for (i = 0; i < len; ++i) {
-		ack[i] = xcb_get_window_attributes_unchecked(X, wid[i]);
-		gck[i] = xcb_get_geometry_unchecked(X, wid[i]);
-	}
-	for (i = 0; i < len; ++i) {
-		xcb_get_window_attributes_reply_t *ar;
-		xcb_get_geometry_reply_t *gr;
-		xcb_rectangle_t geom;
-
-		ar = xcb_get_window_attributes_reply(X, ack[i], NULL);
-		gr = xcb_get_geometry_reply(X, gck[i], NULL);
-		geom.x = gr->x;
-		geom.y = gr->y;
-		geom.width = gr->width;
-		geom.height = gr->height;
-		/*
-		if (ar->_class == XCB_WINDOW_CLASS_INPUT_OUTPUT)
-		*/
-			add_window(wid[i], ar->map_state, geom);
-		free(ar);
-		free(gr);
-	}
-	free(ack);
-	free(gck);
+	root->window_list = NULL;
+	if (scan_children(root->id, &root->window_list) < 0)
+		debug("scan_children: no windows on stack\n");
 	return 0;
 }
 
@@ -329,7 +212,7 @@ static struct window *sanitize_window_list(struct window *win)
 	struct window *tmp;
 
 	for (tmp = NULL; win != NULL; win = win->next) {
-		if (win->map_state != XCB_MAP_STATE_VIEWABLE)
+		if (win->map_state == XCB_MAP_STATE_UNMAPPED)
 			continue;
 		if (win->pixmap == XCB_PIXMAP_NONE) {
 			win->pixmap = xcb_generate_id(X);
@@ -352,7 +235,6 @@ static struct window *sanitize_window_list(struct window *win)
 void paint(struct root *r)
 {
 	struct window *win;
-	xcb_rectangle_t geom;
 	xcb_void_cookie_t ck;
 	uint8_t op;
 	xcb_render_picture_t msk;
@@ -360,16 +242,15 @@ void paint(struct root *r)
 	xcb_xfixes_set_picture_clip_region(X, r->picture_buffer, r->damage,
 									0, 0);
 	paint_background(r);
-	win = sanitize_window_list(window_list);
+	win = sanitize_window_list(root->window_list);
 	for (; win != NULL; win = win->prev) {
 		op = XCB_RENDER_PICT_OP_OVER;
 		msk = alpha_picture;
-		geom = win->geometry;
 		ck = xcb_render_composite_checked(X, op, win->picture, msk,
-					r->picture_buffer, 0, 0, 0, 0, geom.x,
-					geom.y, geom.width, geom.height);
+					r->picture_buffer, 0, 0, 0, 0, win->x,
+					win->y, WIDTH(win), HEIGHT(win));
 		if (check_cookie(ck) != 0) {
-			debugf("composite error: wid=%u\n", win->id);
+			debugf("paint: composite error; wid=%u\n", win->id);
 		}
 	}
 	xcb_xfixes_set_picture_clip_region(X, r->picture_buffer, XCB_NONE,
@@ -381,60 +262,27 @@ void paint(struct root *r)
 	r->damaged = 0;
 }
 
-static int init_windows(void)
-{
-	xcb_query_tree_cookie_t ck;
-	xcb_query_tree_reply_t *r;
-	xcb_window_t *wid;
-	int len;
-	int ret;
-
-	ck = xcb_query_tree_unchecked(X, root->id);
-	r = xcb_query_tree_reply(X, ck, NULL);
-	wid = xcb_query_tree_children(r);
-	len = xcb_query_tree_children_length(r);
-	if ((ret = add_tree(wid, len)) == -1)
-		fprintf(stderr, "can't init windows\n");
-	free(r);
-	return ret;
-}
-
 static void handle_event(xcb_generic_event_t *e)
 {
 	/*
 	debugf("event: %hu\n", e->response_type);
 	*/
-	if (e->response_type == damage_event)
-		HANDLE(damage_notify, e);
-	else {
-		switch (e->response_type) {
-		case XCB_CREATE_NOTIFY:
-			HANDLE(create_notify, e);
-			break;
-		case XCB_DESTROY_NOTIFY:
-			HANDLE(destroy_notify, e);
-			break;
-		case XCB_UNMAP_NOTIFY:
-			HANDLE(unmap_notify, e);
-			break;
-		case XCB_MAP_NOTIFY: 
-			HANDLE(map_notify, e);
-			break;
-		case XCB_REPARENT_NOTIFY:
-			HANDLE(reparent_notify, e);
-			break;
-		case XCB_CONFIGURE_NOTIFY:
-			HANDLE(configure_notify, e);
-			break;
-		case XCB_CIRCULATE_NOTIFY:
-			HANDLE(circulate_notify, e);
-			break;
-		default:
-			if (e->response_type)
-				printf("unhandled event: %hu\n",
+	switch (e->response_type) {
+	case XCB_CREATE_NOTIFY: HANDLE(create_notify, e); break;
+	case XCB_DESTROY_NOTIFY: HANDLE(destroy_notify, e); break;
+	case XCB_UNMAP_NOTIFY: HANDLE(unmap_notify, e); break;
+	case XCB_MAP_NOTIFY: HANDLE(map_notify, e); break;
+	case XCB_REPARENT_NOTIFY: HANDLE(reparent_notify, e); break;
+	case XCB_CONFIGURE_NOTIFY: HANDLE(configure_notify, e); break;
+	case XCB_CIRCULATE_NOTIFY: HANDLE(circulate_notify, e); break;
+	default:
+		if (e->response_type == damage_event) {
+			/* debug("DAMAGE\n"); */
+			HANDLE(damage_notify, e);
+		} else if (e->response_type)
+			debugf("handle_event: unhandled event: %hu\n",
 							e->response_type);
-			break;
-		}
+		break;
 	}
 }
 
@@ -478,8 +326,7 @@ int main(int argc, char *argv[])
 	if (root == NULL || setup_root(s, root) != 0)
 		return -1;
 	alpha_picture = get_alpha_picture();
-	if (init_windows() != 0)
-		return -1;
+	xcb_flush(X);
 	loop();
 	return 0;
 }

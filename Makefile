@@ -4,7 +4,7 @@ all: xray
 	@mkdir -p ./bin
 	@mv xray ./bin
 
-xray: xray.o util.o event.o
+xray: xray.o util.o window.o event.o
 
 xray.o: xray.h
 
