@@ -1,11 +1,46 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <xcb/xcb.h>
+#include <xcb/damage.h>
 #include <xcb/composite.h>
-#include <xcb/render.h>
-#include <xcb/xfixes.h>
 #include <xcb/xcb_renderutil.h>
 #include "xray.h"
+
+xcb_generic_error_t *error;
+
+static const char *strerror[] = { "success", "request", "value", "window",
+	"pixmap", "atom", "cursor", "font", "match", "drawable", "access",
+	"alloc", "colormap", "gcontext", "idchoice", "name", "length",
+	"implementation" };
+
+int check_error(const char *s)
+{
+	int ret = 0;
+	const char *se;
+
+	if (error != NULL) {
+		ret = error->error_code;
+		se = (ret < LENGTH(strerror)) ? strerror[ret] : "unknow";
+		debugf("%s: (%d) %s\n", s, ret, se);
+		free(error);
+	}
+	return ret;
+}
+
+int check_cookie(xcb_void_cookie_t ck)
+{
+	xcb_generic_error_t *e;
+	const char *s;
+	int ret = 0;
+
+	if ((e = xcb_request_check(X, ck)) != NULL) {
+		ret = e->error_code;
+		s = (ret < LENGTH(strerror)) ? strerror[ret] : "unknow";
+		debugf("check_cookie: %d %s\n", ret, s);
+		free(e);
+	}
+	return ret;
+}
 
 xcb_pixmap_t update_pixmap(struct window *win)
 {
@@ -28,44 +63,51 @@ xcb_render_picture_t update_picture(struct window *win)
 	return win->picture;
 }
 
-xcb_render_picture_t get_alpha_picture(void)
+xcb_render_picture_t get_alpha_picture(unsigned opacity)
 {
 	xcb_pixmap_t pid;
 	xcb_render_picture_t pict;
-	xcb_render_pictformat_t fmt;
+	xcb_render_pictforminfo_t *pi;
 	uint32_t mask;
 	uint32_t vals[1];
-	xcb_void_cookie_t ck;
 
 	pid = xcb_generate_id(X);
-	ck = xcb_create_pixmap_checked(X, 32, pid, root->id, 1, 1);
-	if (check_cookie(ck)) {
-		debug("get_alpha_picture: can't create pixmap\n");
-	}
+	xcb_create_pixmap(X, 8, pid, root->id, 1, 1);
 	pict = xcb_generate_id(X);
-	fmt = xcb_render_util_find_standard_format(
+	pi = xcb_render_util_find_standard_format(
 					xcb_render_util_query_formats(X),
-					XCB_PICT_STANDARD_ARGB_32)->id;
+							XCB_PICT_STANDARD_A_8);
 	mask = XCB_RENDER_CP_REPEAT;
 	vals[0] = 1;
-	ck = xcb_render_create_picture_checked(X, pict, pid, fmt, mask, vals);
-	if (check_cookie(ck)) {
-		debug("get_alpha_picture: can't create picture\n");
-	}
+	xcb_render_create_picture(X, pict, pid, pi->id, mask, vals);
 	xcb_free_pixmap(X, pid);
 	{
-		uint8_t op;
 		xcb_render_color_t c;
-		xcb_rectangle_t r[1];
+		xcb_rectangle_t r = { 0, 0, 1, 1 };
 
-		op = XCB_RENDER_PICT_OP_SRC;
 		c.red = c.green = c.blue = 0x0000;
-		c.alpha = 0xcccc;
-		r[0].x = r[0].y = 0;
-		r[0].width = r[0].height = 1;
-		xcb_render_fill_rectangles(X, op, pict, c, 1, r);
+		opacity = (double) opacity / OPAQUE;
+		c.alpha = /*opacity */ 0xcccc;
+		xcb_render_fill_rectangles(X, XCB_RENDER_PICT_OP_SRC,
+								pict, c, 1, &r);
 	}
 	return pict;
+}
+
+unsigned get_opacity_property(xcb_window_t wid)
+{
+	xcb_get_property_cookie_t ck;
+	xcb_get_property_reply_t *r;
+	unsigned val = OPAQUE;
+
+	ck = xcb_get_property_unchecked(X, 0, wid, get_opacity_atom(),
+						XCB_ATOM_CARDINAL, 0L, 1L);
+	if ((r = xcb_get_property_reply(X, ck, NULL)) != NULL) {
+		val = *((unsigned *) xcb_get_property_value(r));
+		free(r);
+	}
+	debugf("get_opacity_property: wid=%u val=%u\n", wid, val);
+	return val;
 }
 
 void debug_region(xcb_xfixes_region_t reg)

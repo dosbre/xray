@@ -6,20 +6,15 @@
 #define debugf(fmt, ...) do { } while (0)
 #endif
 
-#define HANDLE(name, event)						\
-	do { name((xcb_ ## name ## _event_t *) event); } while (0)
+#define LENGTH(array) (sizeof(array) / sizeof(array[0]))
+#define HANDLE(name, event) name((xcb_ ## name ## _event_t *) event)
 
-#include <xcb/xcb.h>
-#include <xcb/damage.h>
-#include <xcb/render.h>
+#define TRANSLUCENT 0xe0000000
+#define OPAQUE 0xffffffff
 
 extern xcb_connection_t *X;
-extern xcb_generic_error_t *error;
 
 extern uint8_t pict_rgb_24;
-
-int check_cookie(xcb_void_cookie_t ck);
-void xerror(const char *s);
 
 struct root {
 	xcb_window_t id;
@@ -36,9 +31,9 @@ struct root {
 
 extern struct root *root;
 
+xcb_render_picture_t get_picture(xcb_drawable_t draw, xcb_visualid_t visual);
 void add_damaged_region(struct root *root, xcb_xfixes_region_t region);
-int paint_background(struct root *root);
-void paint(struct root *root);
+xcb_atom_t get_opacity_atom(void);
 
 /* window.c */
 #define GEOMCPY(win1, win2)					\
@@ -61,18 +56,20 @@ void paint(struct root *root);
 		((win)->y > (int) root->height) ||	\
 		(VBOUND(win) < 0)			\
 	))
-
 struct window {
 	xcb_window_t id;
 	int16_t x, y;
 	uint16_t width, height;
 	uint16_t border_width;
+	xcb_visualid_t visual;
 	uint8_t map_state;
 	uint8_t override_redirect;
-	xcb_pixmap_t pixmap;
-	xcb_render_picture_t picture;
 	xcb_damage_damage_t damage;
 	xcb_xfixes_region_t region;
+	xcb_pixmap_t pixmap;
+	xcb_render_picture_t picture;
+	uint32_t opacity;
+	xcb_render_picture_t alpha;
 	struct window *prev;	/* only used for transparency */
 	struct window *next;
 };
@@ -81,6 +78,8 @@ struct window *add_window(struct window **list, xcb_window_t wid);
 int add_winvec(struct window **list, xcb_window_t wid[], int len);
 int remove_window(struct window **list, struct window *win);
 void restack_window(struct window **list, struct window *win, xcb_window_t sib);
+void init_window(struct window *win, xcb_get_geometry_reply_t *gr,
+					xcb_get_window_attributes_reply_t *ar);
 
 /* event.c */
 void create_notify(xcb_create_notify_event_t *e);
@@ -93,7 +92,11 @@ void circulate_notify(xcb_circulate_notify_event_t *e);
 void damage_notify(xcb_damage_notify_event_t *e);
 
 /* util.c */
+extern xcb_generic_error_t *error;
+int check_error(const char *s);
+int check_cookie(xcb_void_cookie_t ck);
 xcb_pixmap_t update_pixmap(struct window *win);
 xcb_render_picture_t update_picture(struct window *win);
 void debug_region(xcb_xfixes_region_t region);
-xcb_render_picture_t get_alpha_picture(void);
+xcb_render_picture_t get_alpha_picture(unsigned opacity);
+unsigned get_opacity_property(xcb_window_t wid);
