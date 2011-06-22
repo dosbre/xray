@@ -9,23 +9,27 @@
 void create_notify(xcb_create_notify_event_t *e)
 {
 	struct window *win;
+	xcb_get_window_attributes_reply_t *ar;
 
-	debugf("CreateNotify: window=%u\n", e->window);
-	if ((win = add_win(&root->window_list, e->window))) {
-		xcb_get_window_attributes_reply_t *ar;
-
-		ar = xcb_get_window_attributes_reply(X,
-			xcb_get_window_attributes_unchecked(X, win->id), NULL);
-		if (ar) {
-			win->visual = ar->visual;
-			win->map_state = ar->map_state;
-			free(ar);
-		}
+	debugf("CreateNotify: parent=%u window=%u\n\tx=%hd y=%hd "
+			"width=%hu height=%hu border_width=%hu\n\t"
+			"override_redirect=%#x\n", e->parent,
+			e->window, e->x, e->y, e->width, e->height,
+			e->border_width, e->override_redirect);
+	ar = xcb_get_window_attributes_reply(X,
+			xcb_get_window_attributes(X, e->window), &error);
+	if (error == NULL && (win = add_win(&root->window_list, e->window))) {
+		win->visual = ar->visual;
+		win->map_state = ar->map_state;
+		free(ar);
+		debugf("_class %#x\n", ar->_class);
 		win->x = e->x;
 		win->y = e->y;
 		win->width = e->width;
 		win->height = e->height;
 		win->border_width = e->border_width;
+	} else if (error != NULL) {
+		check_error("xcb_get_window_attributes");
 	}
 }
 
@@ -188,8 +192,11 @@ void circulate_notify(xcb_circulate_notify_event_t *e)
 void damage_notify(xcb_damage_notify_event_t *e)
 {
 	xcb_xfixes_region_t parts;
+	struct window *win;
 
 	/*debugf("DamageNotify: drawable=%u\n", e->drawable);*/
+	if (!(win = find_win(root->window_list, e->drawable)))
+		return;
 	parts = xcb_generate_id(X);
 	xcb_xfixes_create_region(X, parts, 0, NULL);
 	xcb_damage_subtract(X, e->damage, XCB_NONE, parts);

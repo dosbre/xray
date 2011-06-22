@@ -11,7 +11,7 @@
 
 extern xcb_connection_t *X;
 
-extern uint8_t pict_rgb_24;
+extern uint8_t pict_rgb_24, pict_argb_32;
 
 struct root {
 	xcb_window_t id;
