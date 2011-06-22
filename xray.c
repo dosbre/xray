@@ -64,23 +64,13 @@ static void init_extensions(void)
 	free(composite_r);
 }
 
-xcb_atom_t get_opacity_atom(void)
+static void set_root_event_mask(xcb_window_t wid)
 {
-	static xcb_atom_t atom;
+	uint32_t mask = XCB_CW_EVENT_MASK;
+	uint32_t vals[1] = { XCB_EVENT_MASK_STRUCTURE_NOTIFY |
+					XCB_EVENT_MASK_SUBSTRUCTURE_NOTIFY };
 
-	if (!atom) {
-		xcb_intern_atom_cookie_t ck;
-		xcb_intern_atom_reply_t *ar;
-		char *name = "_NET_WM_WINDOW_OPACITY";
-		ck = xcb_intern_atom_unchecked(X, 0, strlen(name), name);
-		if ((ar = xcb_intern_atom_reply(X, ck, NULL)) != NULL) {
-			atom = ar->atom;
-			free(ar);
-		} else {
-			atom = XCB_ATOM_NONE;
-		}
-	}
-	return atom;
+	xcb_change_window_attributes(X, wid, mask, vals);
 }
 
 static int redirect_subwindows(xcb_window_t wid)
@@ -90,15 +80,6 @@ static int redirect_subwindows(xcb_window_t wid)
 	ck = xcb_composite_redirect_subwindows_checked(X, wid,
 						XCB_COMPOSITE_REDIRECT_MANUAL);
 	return check_cookie(ck);
-}
-
-static void set_root_event_mask(xcb_window_t wid)
-{
-	uint32_t mask = XCB_CW_EVENT_MASK;
-	uint32_t vals[1] = { XCB_EVENT_MASK_STRUCTURE_NOTIFY |
-					XCB_EVENT_MASK_SUBSTRUCTURE_NOTIFY };
-
-	xcb_change_window_attributes(X, wid, mask, vals);
 }
 
 static xcb_render_picture_t get_background(void)
@@ -144,55 +125,40 @@ static int paint_background(struct root *r)
 	return check_cookie(ck);
 }
 
-static int scan_children(xcb_window_t parent, struct window **list)
+static int scan_children(xcb_window_t par, struct window **list)
 {
 	xcb_query_tree_reply_t *r;
 	xcb_window_t *wid;
-	int len;
-	int ret;
+	int len = 0;
 
-	r = xcb_query_tree_reply(X, xcb_query_tree_unchecked(X, parent), NULL);
+	r = xcb_query_tree_reply(X, xcb_query_tree_unchecked(X, par), NULL);
 	if (r != NULL) {
 		wid = xcb_query_tree_children(r);
-		len = xcb_query_tree_children_length(r);
-		ret = add_winvec(list, wid, len);
+		len = add_winvec(list, wid, r->children_len);
 		free(r);
 	}
-	return ret;
-}
-
-xcb_render_picture_t get_picture(xcb_drawable_t draw, xcb_visualid_t vid)
-{
-	uint32_t mask = XCB_RENDER_CP_SUBWINDOW_MODE;
-	uint32_t vals[1] = { XCB_SUBWINDOW_MODE_INCLUDE_INFERIORS };
-	xcb_render_picture_t pict;
-	xcb_render_pictvisual_t *pv;
-
-	pict = xcb_generate_id(X);
-	pv = xcb_render_util_find_visual_format(
-					xcb_render_util_query_formats(X), vid);
-	if (pv) {
-		xcb_render_create_picture(X, pict, draw,
-						pv->format, mask, vals);
-	} else {
-		debug("get_picture: no pictvisual\n");
-		pict = XCB_RENDER_PICTURE_NONE;
-	}
-	return pict;
+	return len;
 }
 
 static int setup_root(xcb_screen_t *s, struct root *r)
 {
+	uint32_t mask = XCB_RENDER_CP_SUBWINDOW_MODE;
+	uint32_t vals[1] = { XCB_SUBWINDOW_MODE_INCLUDE_INFERIORS };
+
 	r->id = s->root;
 	r->depth = s->root_depth;
 	r->width = s->width_in_pixels;
 	r->height = s->height_in_pixels;
-	r->picture = get_picture(s->root, s->root_visual);
+	r->picture = xcb_generate_id(X);
+	xcb_render_create_picture(X, r->picture, r->id, pict_rgb_24, mask,
+									vals);
 	{
 		xcb_pixmap_t pid = xcb_generate_id(X);
 
 		xcb_create_pixmap(X, r->depth, pid, r->id, r->width, r->height);
-		r->picture_buffer = get_picture(pid, s->root_visual);
+		r->picture_buffer = xcb_generate_id(X);
+		xcb_render_create_picture(X, r->picture_buffer, pid,
+						pict_rgb_24, mask, vals);
 		xcb_free_pixmap(X, pid);
 	}
 	r->background = get_background();
@@ -217,7 +183,8 @@ static struct window *sanitize_window_list(struct window *win)
 	struct window *tmp;
 
 	for (tmp = NULL; win != NULL; win = win->next) {
-		if (win->map_state == XCB_MAP_STATE_UNMAPPED)
+		if (win->map_state == XCB_MAP_STATE_UNMAPPED ||
+							OFFSCREEN(win, root))
 			continue;
 		if (win->pixmap == XCB_PIXMAP_NONE) {
 			win->pixmap = xcb_generate_id(X);
@@ -225,18 +192,10 @@ static struct window *sanitize_window_list(struct window *win)
 								win->pixmap);
 		}
 		if (win->picture == XCB_RENDER_PICTURE_NONE) {
-			/*
 			win->picture = xcb_generate_id(X);
 			xcb_render_create_picture(X, win->picture,
-							win->pixmap,
-							pict_rgb_24,
-							0, NULL);
-			*/
-			win->picture = get_picture(win->id, win->visual);
+					win->pixmap, pict_rgb_24, 0, NULL);
 		}
-		if (/*win->opacity != OPAQUE &&*/
-				win->alpha == XCB_RENDER_PICTURE_NONE)
-			win->alpha = get_alpha_picture(win->opacity);
 		win->prev = tmp;
 		tmp = win;
 	}
@@ -248,7 +207,6 @@ static void paint(struct root *r)
 	struct window *win;
 	xcb_void_cookie_t ck;
 	uint8_t op;
-	xcb_render_picture_t msk;
 
 	xcb_xfixes_set_picture_clip_region(X, r->picture_buffer, r->damage,
 									0, 0);
@@ -256,10 +214,79 @@ static void paint(struct root *r)
 	win = sanitize_window_list(root->window_list);
 	for (; win != NULL; win = win->prev) {
 		op = XCB_RENDER_PICT_OP_OVER;
-		msk = alpha_picture;
-		ck = xcb_render_composite_checked(X, op, win->picture, msk,
-					r->picture_buffer, 0, 0, 0, 0, win->x,
-					win->y, WIDTH(win), HEIGHT(win));
+		if (win->x < 0 || win->y < 0) {
+			int16_t x, y;
+
+			if (win->x < 0) {
+				x = win->x + (int) root->width;
+				y = win->y;
+				xcb_render_composite(X, op, win->picture, 0,
+						r->picture_buffer, 0, 0, 0, 0,
+						x, y, WIDTH(win), HEIGHT(win));
+			}
+			if (win->y < 0) {
+				x = win->x;
+				y = win->y + (int) root->height;
+				xcb_render_composite(X, op, win->picture, 0,
+						r->picture_buffer, 0, 0, 0, 0,
+						x, y, WIDTH(win), HEIGHT(win));
+			}
+			if (win->x < 0 && win->y < 0) {
+				x = win->x + (int) root->width;
+				y = win->y + (int) root->height;
+				xcb_render_composite(X, op, win->picture, 0,
+						r->picture_buffer, 0, 0, 0, 0,
+						x, y, WIDTH(win), HEIGHT(win));
+			}
+		}
+		if (HBOUND(win) > root->width || VBOUND(win) > root->height) {
+			int16_t x, y;
+
+			if (HBOUND(win) > root->width) {
+				x = win->x - (int) root->width;
+				y = win->y;
+				xcb_render_composite(X, op, win->picture, 0,
+						r->picture_buffer, 0, 0, 0, 0,
+						x, y, WIDTH(win), HEIGHT(win));
+			}
+			if (VBOUND(win) > root->height) {
+				x = win->x;
+				y = win->y - (int) root->height;
+				xcb_render_composite(X, op, win->picture, 0,
+						r->picture_buffer, 0, 0, 0, 0,
+						x, y, WIDTH(win), HEIGHT(win));
+			}
+			if (HBOUND(win) > root->width &&
+						VBOUND(win) > root->height) {
+				x = win->x - (int) root->width;
+				y = win->y - (int) root->height;
+				xcb_render_composite(X, op, win->picture, 0,
+						r->picture_buffer, 0, 0, 0, 0,
+						x, y, WIDTH(win), HEIGHT(win));
+			}
+		}
+		if (win->x < 0 && VBOUND(win) > root->height) {
+			int16_t x, y;
+
+			x = win->x + (int) root->width;
+			y = win->y - (int) root->height;
+			xcb_render_composite(X, op, win->picture, 0,
+					r->picture_buffer, 0, 0, 0, 0,
+					x, y, WIDTH(win), HEIGHT(win));
+		} else if (win->y < 0 && HBOUND(win) > root->width) {
+			int16_t x, y;
+
+			x = win->x - (int) root->width;
+			y = win->y + (int) root->height;
+			xcb_render_composite(X, op, win->picture, 0,
+					r->picture_buffer, 0, 0, 0, 0,
+					x, y, WIDTH(win), HEIGHT(win));
+		}
+		op = XCB_RENDER_PICT_OP_OVER;
+		ck = xcb_render_composite_checked(X, op, win->picture,
+				0, r->picture_buffer,
+				0, 0, 0, 0, win->x, win->y, WIDTH(win),
+				HEIGHT(win));
 		if (check_cookie(ck) != 0) {
 			debugf("paint: composite error; wid=%u\n", win->id);
 		}
@@ -299,7 +326,7 @@ static int loop(void)
 
 	while (1) {
 		if (!(e = xcb_wait_for_event(X)))
-			return 1;
+			return -1;
 		do {
 			handle_event(e);
 			free(e);
@@ -311,7 +338,7 @@ static int loop(void)
 	return 0;
 }
 
-int main(int argc, char *argv[])
+int main(void)
 {
 	xcb_screen_t *s;
 
@@ -332,7 +359,6 @@ int main(int argc, char *argv[])
 	root = malloc(sizeof(struct root));
 	if (root == NULL || setup_root(s, root) != 0)
 		return -1;
-	alpha_picture = get_alpha_picture(0xffffffff);
 	xcb_flush(X);
 	loop();
 	return 0;

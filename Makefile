@@ -10,8 +10,7 @@ xray.o: xray.h
 
 clean:
 	@echo cleaning
-	@rm -f ./bin/xray xray.o event.o util.o
-	@rmdir ./bin
+	@rm -f ./bin/xray xray.o window.o event.o util.o
 
 install: all
 	@echo installing executable file to ${PREFIX}/bin
