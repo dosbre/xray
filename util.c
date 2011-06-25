@@ -13,30 +13,29 @@ static const char *strerror[] = { "success", "request", "value", "window",
 	"alloc", "colormap", "gcontext", "idchoice", "name", "length",
 	"implementation" };
 
-int check_error(const char *s)
+unsigned check_error(const char *s)
 {
-	int ret = 0;
+	unsigned ret = 0;
 	const char *se;
 
 	if (error != NULL) {
 		ret = error->error_code;
-		se = (ret < (int) LENGTH(strerror)) ? strerror[ret] : "unknow";
-		debugf("%s: (%d) %s\n", s, ret, se);
+		se = (ret < LENGTH(strerror)) ? strerror[ret] : "unknow";
+		fprintf(stderr, "Xerror %s: (%u) %s\n", s, ret, se);
 		free(error);
 	}
 	return ret;
 }
 
-int check_cookie(xcb_void_cookie_t ck)
+unsigned check_cookie(xcb_void_cookie_t ck)
 {
 	xcb_generic_error_t *e;
-	const char *s;
-	int ret = 0;
+	unsigned ret = 0;
 
 	if ((e = xcb_request_check(X, ck)) != NULL) {
 		ret = e->error_code;
-		s = (ret < (int) LENGTH(strerror)) ? strerror[ret] : "unknow";
-		debugf("check_cookie: %d %s\n", ret, s);
+		debugf("check_cookie: %d %s\n", ret,
+			(ret < LENGTH(strerror)) ? strerror[ret] : "unknow");
 		free(e);
 	}
 	return ret;

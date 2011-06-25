@@ -1,19 +1,37 @@
 #ifdef DEBUG
-#define debug(msg) do { fprintf(stderr, msg); } while (0)
-#define debugf(fmt, ...) do { fprintf(stderr, fmt, ## __VA_ARGS__); } while (0)
+#define debug(msg) fprintf(stderr, msg)
+#define debugf(fmt, ...) fprintf(stderr, fmt, ## __VA_ARGS__)
 #else
-#define debug(msg) do { } while (0)
-#define debugf(fmt, ...) do { } while (0)
+#define debug(msg)
+#define debugf(fmt, ...)
 #endif
 
 #define LENGTH(array) (sizeof(array) / sizeof(array[0]))
-#define HANDLE(name, event) name((xcb_ ## name ## _event_t *) event)
+
+#define WIDTH(win) ((win)->width + ((win)->border_width * 2))
+#define HEIGHT(win) ((win)->height + ((win)->border_width * 2))
+#define HBOUND(win) ((win)->x + (int) WIDTH((win)))
+#define VBOUND(win) ((win)->y + (int) HEIGHT((win)))
+#define OFFSCREEN(win, root)	\
+	((			\
+		((win)->x > (int) (root)->width) ||	\
+		(HBOUND(win) < 0)			\
+	) || (						\
+		((win)->y > (int) (root)->height) ||	\
+		(VBOUND(win) < 0)			\
+	))
+
+#define OPACITY_PROPERTY_NAME "_NET_WM_WINDOW_OPACITY"
+#define OPAQUE 0xffffffff
 
 extern xcb_connection_t *X;
 
-extern uint8_t pict_rgb_24, pict_argb_32;
+extern xcb_render_pictformat_t pict_a_8, pict_rgb_24, pict_argb_32;
 
-struct root {
+extern xcb_atom_t _XROOTPMAP_ID;
+extern xcb_atom_t _NET_WM_WINDOW_OPACITY;
+
+extern struct root {
 	xcb_window_t id;
 	uint32_t depth;
 	uint16_t width;
@@ -24,27 +42,8 @@ struct root {
 	xcb_xfixes_region_t damage;
 	uint16_t damaged;
 	struct window *window_list;
-};
+} *root;
 
-extern struct root *root;
-
-xcb_render_picture_t get_picture(xcb_drawable_t draw, xcb_visualid_t visual);
-void add_damaged_region(struct root *root, xcb_xfixes_region_t region);
-xcb_atom_t get_opacity_atom(void);
-
-/* window.c */
-#define WIDTH(win) (win->width + (win->border_width * 2))
-#define HEIGHT(win) (win->height + (win->border_width * 2))
-#define HBOUND(win) ((win)->x + (int) WIDTH((win)))
-#define VBOUND(win) ((win)->y + (int) HEIGHT((win)))
-#define OFFSCREEN(win, root)	\
-	((			\
-		((win)->x > (int) root->width) ||	\
-		(HBOUND(win) < 0)			\
-	) || (						\
-		((win)->y > (int) root->height) ||	\
-		(VBOUND(win) < 0)			\
-	))
 struct window {
 	xcb_window_t id;
 	int16_t x, y;
@@ -56,9 +55,16 @@ struct window {
 	xcb_xfixes_region_t region;
 	xcb_pixmap_t pixmap;
 	xcb_render_picture_t picture;
+	uint32_t opacity;
+	xcb_render_picture_t alpha;
 	struct window *prev;
 	struct window *next;
 };
+
+void add_damaged_region(struct root *root, xcb_xfixes_region_t region);
+uint32_t get_opacity(xcb_window_t wid);
+
+/* window.c */
 struct window *find_win(struct window *list, xcb_window_t wid);
 struct window *add_win(struct window **list, xcb_window_t wid);
 int remove_win(struct window **list, struct window *win);
@@ -75,10 +81,11 @@ void map_notify(xcb_map_notify_event_t *e);
 void reparent_notify(xcb_reparent_notify_event_t *e);
 void configure_notify(xcb_configure_notify_event_t *e);
 void circulate_notify(xcb_circulate_notify_event_t *e);
+void property_notify(xcb_property_notify_event_t *e);
 void damage_notify(xcb_damage_notify_event_t *e);
 
 /* util.c */
 extern xcb_generic_error_t *error;
-int check_error(const char *s);
-int check_cookie(xcb_void_cookie_t ck);
+unsigned check_error(const char *s);
+unsigned check_cookie(xcb_void_cookie_t ck);
 

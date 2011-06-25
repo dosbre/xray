@@ -4,6 +4,7 @@
 #include <xcb/xcb.h>
 #include <xcb/composite.h>
 #include <xcb/damage.h>
+#include <xcb/xcb_renderutil.h>
 #include "xray.h"
 
 void create_notify(xcb_create_notify_event_t *e)
@@ -18,11 +19,11 @@ void create_notify(xcb_create_notify_event_t *e)
 			e->border_width, e->override_redirect);
 	ar = xcb_get_window_attributes_reply(X,
 			xcb_get_window_attributes(X, e->window), &error);
-	if (error == NULL && (win = add_win(&root->window_list, e->window))) {
+	if (!error && (win = add_win(&root->window_list, e->window))) {
 		win->visual = ar->visual;
 		win->map_state = ar->map_state;
 		free(ar);
-		debugf("_class %#x\n", ar->_class);
+		debugf("\t_class %#x\n", ar->_class);
 		win->x = e->x;
 		win->y = e->y;
 		win->width = e->width;
@@ -50,13 +51,13 @@ void unmap_notify(xcb_unmap_notify_event_t *e)
 
 	debugf("UnmapNotify: window=%u\n", e->window);
 	if ((win = find_win(root->window_list, e->window))) {
-		if (win->pixmap != XCB_PIXMAP_NONE) {
+		if (win->pixmap != XCB_NONE) {
 			xcb_free_pixmap(X, win->pixmap);
-			win->pixmap = XCB_PIXMAP_NONE;
+			win->pixmap = XCB_NONE;
 		}
-		if (win->picture != XCB_RENDER_PICTURE_NONE) {
+		if (win->picture != XCB_NONE) {
 			xcb_render_free_picture(X, win->picture);
-			win->picture = XCB_RENDER_PICTURE_NONE;
+			win->picture = XCB_NONE;
 		}
 		win->map_state = XCB_MAP_STATE_UNMAPPED;
 		add_damaged_region(root, win->region);
@@ -72,9 +73,15 @@ void map_notify(xcb_map_notify_event_t *e)
 		win->map_state = XCB_MAP_STATE_VIEWABLE;
 		win->pixmap = xcb_generate_id(X);
 		xcb_composite_name_window_pixmap(X, win->id, win->pixmap);
+		{
+			xcb_render_pictvisual_t *pv;
+			pv = xcb_render_util_find_visual_format(
+					xcb_render_util_query_formats(X),
+					win->visual);
 		win->picture = xcb_generate_id(X);
 		xcb_render_create_picture(X, win->picture, win->pixmap,
-							pict_rgb_24, 0, NULL);
+							pv->format, 0, NULL);
+		}
 		add_damaged_region(root, win->region);
 	}
 }
@@ -126,13 +133,13 @@ void configure_notify(xcb_configure_notify_event_t *e)
 		return;
 	debugf("\t->next=%u\n", (win->next) ? win->next->id : 0);
 	if (win->width != e->width || win->height != e->height) {
-		if (win->pixmap != XCB_PIXMAP_NONE) {
+		if (win->pixmap != XCB_NONE) {
 			xcb_free_pixmap(X, win->pixmap);
-			win->pixmap = XCB_PIXMAP_NONE;
+			win->pixmap = XCB_NONE;
 		}
-		if (win->picture != XCB_RENDER_PICTURE_NONE) {
+		if (win->picture != XCB_NONE) {
 			xcb_render_free_picture(X, win->picture);
-			win->picture = XCB_RENDER_PICTURE_NONE;
+			win->picture = XCB_NONE;
 		}
 		win->width = e->width;
 		win->height = e->height;
@@ -189,14 +196,40 @@ void circulate_notify(xcb_circulate_notify_event_t *e)
 	}
 }
 
+void property_notify(xcb_property_notify_event_t *e)
+{
+	struct window *win;
+
+	debugf("PropertyNotify: window=%u atom=%u time=%u state=%#x\n",
+					e->window, e->atom, e->time, e->state);
+	if (e->atom == _NET_WM_WINDOW_OPACITY &&
+			(win = find_win(root->window_list, e->window))) {
+		if (e->state == XCB_PROPERTY_NEW_VALUE) {
+			win->opacity = get_opacity(win->id);
+		} else {
+			win->opacity = OPAQUE;
+		}
+		if (win->alpha != XCB_NONE) {
+			xcb_render_free_picture(X, win->alpha);
+			win->alpha = XCB_NONE;
+		}
+		add_damaged_region(root, win->region);
+	} else if (e->atom == _XROOTPMAP_ID) {
+		if (root->background != XCB_NONE) {
+			xcb_render_free_picture(X, root->background);
+			root->background = XCB_NONE;
+		}
+	}
+}
+
 void damage_notify(xcb_damage_notify_event_t *e)
 {
 	xcb_xfixes_region_t parts;
-	struct window *win;
+	/*struct window *win;*/
 
-	/*debugf("DamageNotify: drawable=%u\n", e->drawable);*/
+	/*debugf("DamageNotify: drawable=%u\n", e->drawable);
 	if (!(win = find_win(root->window_list, e->drawable)))
-		return;
+		return;*/
 	parts = xcb_generate_id(X);
 	xcb_xfixes_create_region(X, parts, 0, NULL);
 	xcb_damage_subtract(X, e->damage, XCB_NONE, parts);

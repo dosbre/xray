@@ -21,8 +21,5 @@ root):
 
 TODO
 ----
-In order of priority:
-	* Add some command-line arguments
-	* Independent window opacity (OPACITY_PROP atom)
-	* Preserve the root window background
+* Add some command-line arguments
 

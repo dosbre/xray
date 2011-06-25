@@ -9,12 +9,13 @@ struct window *find_win(struct window *list, xcb_window_t wid)
 {
 	struct window *win = NULL;
 
-	if (wid != XCB_WINDOW_NONE) {
+	if (wid != XCB_NONE) {
 		for (win = list; win; win = win->next)
 			if (win->id == wid)
 				break;;
 		if (win == NULL)
-			debugf("find_window: window %u not found\n", wid);
+			fprintf(stderr, "find_window: window %u "
+							"not found\n", wid);
 	}
 	return win;
 }
@@ -22,6 +23,7 @@ struct window *find_win(struct window *list, xcb_window_t wid)
 struct window *add_win(struct window **list, xcb_window_t wid)
 {
 	struct window *win;
+	const uint32_t val = XCB_EVENT_MASK_PROPERTY_CHANGE;
 
 	if ((win = malloc(sizeof(struct window))) == NULL) {
 		fprintf(stderr, "add_window: can't alloc memory\n");
@@ -34,6 +36,11 @@ struct window *add_win(struct window **list, xcb_window_t wid)
 	win->region = xcb_generate_id(X);
 	xcb_xfixes_create_region_from_window(X, win->region, win->id,
 							XCB_SHAPE_SK_BOUNDING);
+	xcb_change_window_attributes(X, win->id, XCB_CW_EVENT_MASK, &val);
+	win->pixmap = XCB_NONE;
+	win->picture = XCB_NONE;
+	win->opacity = get_opacity(win->id);
+	win->alpha = XCB_NONE;
 	win->next = *list;
 	*list = win;
 	return win;
@@ -50,6 +57,12 @@ int remove_win(struct window **list, struct window *win)
 	*prev = win->next;
 	xcb_damage_destroy(X, win->damage);
 	xcb_xfixes_destroy_region(X, win->region);
+	if (win->pixmap != XCB_NONE)
+		xcb_free_pixmap(X, win->pixmap);
+	if (win->picture != XCB_NONE)
+		xcb_render_free_picture(X, win->picture);
+	if (win->alpha != XCB_NONE)
+		xcb_render_free_picture(X, win->alpha);
 	free(win);
 	return 0;
 }
@@ -65,28 +78,10 @@ void restack_win(struct window **list, struct window *win, xcb_window_t sid)
 	*prev = win->next;
 	/* rehook */
 	for (prev = list; *prev; prev = &(*prev)->next)
-		if (*prev && (*prev)->id == sid)
+		if ((*prev)->id == sid)
 			break;
 	win->next = *prev;
 	*prev = win;
-}
-
-void init_win(struct window *win, xcb_get_window_attributes_reply_t *ar,
-						xcb_get_geometry_reply_t *gr)
-{
-	if (ar != NULL) {
-		win->visual = ar->visual;
-		win->map_state = ar->map_state;
-	}
-	if (gr != NULL) {
-		win->x = gr->x;
-		win->y = gr->y;
-		win->width = gr->width;
-		win->height = gr->height;
-		win->border_width = gr->border_width;
-	}
-	win->pixmap = XCB_PIXMAP_NONE;
-	win->picture = XCB_RENDER_PICTURE_NONE;
 }
 
 int add_winvec(struct window **list, xcb_window_t wid[], int len)
@@ -116,12 +111,12 @@ int add_winvec(struct window **list, xcb_window_t wid[], int len)
 		ar = xcb_get_window_attributes_reply(X, ack[i], NULL);
 		gr = xcb_get_geometry_reply(X, gck[i], NULL);
 		if (!ar || !gr) {
-			fprintf(stderr, "add_winvec: can't get window "
-								"attributes\n");
 			if (ar)
 				free(ar);
 			if (gr)
 				free(gr);
+			fprintf(stderr, "add_winvec: can't get attributes of "
+							"window %u\n", wid[i]);
 			continue;
 		}
 		if (ar->_class == XCB_WINDOW_CLASS_INPUT_OUTPUT &&
@@ -133,8 +128,8 @@ int add_winvec(struct window **list, xcb_window_t wid[], int len)
 			win->width = gr->width;
 			win->height = gr->height;
 			win->border_width = gr->border_width;
-			debugf("add_winvec: window %u on stack\n", win->id);
 			++n;
+			debugf("add_winvec: window %u on stack\n", win->id);
 		}
 		free(ar);
 		free(gr);
