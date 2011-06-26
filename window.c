@@ -7,135 +7,122 @@
 
 struct window *find_win(struct window *list, xcb_window_t wid)
 {
-	struct window *win = NULL;
+	struct window *w = NULL;
 
 	if (wid != XCB_NONE) {
-		for (win = list; win; win = win->next)
-			if (win->id == wid)
+		for (w = list; w; w = w->next)
+			if (w->id == wid)
 				break;;
-		if (win == NULL)
+		if (!w)
 			fprintf(stderr, "find_window: window %u "
 							"not found\n", wid);
 	}
-	return win;
+	return w;
 }
 
 struct window *add_win(struct window **list, xcb_window_t wid)
 {
-	struct window *win;
-	const uint32_t val = XCB_EVENT_MASK_PROPERTY_CHANGE;
+	struct window *w = NULL;
+	uint32_t mask = XCB_CW_EVENT_MASK;
+	const uint32_t vals[1] = { XCB_EVENT_MASK_PROPERTY_CHANGE };
+	uint8_t flag;
 
-	if ((win = malloc(sizeof(struct window))) == NULL) {
+	if ((w = malloc(sizeof(struct window)))) {
+		w->id = wid;
+		w->damage = xcb_generate_id(X);
+		flag = XCB_DAMAGE_REPORT_LEVEL_NON_EMPTY;
+		xcb_damage_create(X, w->damage, w->id, flag);
+		w->region = xcb_generate_id(X);
+		flag = XCB_SHAPE_SK_BOUNDING;
+		xcb_xfixes_create_region_from_window(X, w->region, w->id, flag);
+		w->pixmap = XCB_NONE;
+		w->picture = XCB_NONE;
+		w->opacity = get_window_opacity(w->id);
+		w->alpha = XCB_NONE;
+		w->prev = NULL;
+		w->next = *list;
+		*list = w;
+		xcb_change_window_attributes(X, w->id, mask, vals);
+	} else {
 		fprintf(stderr, "add_window: can't alloc memory\n");
-		return NULL;
 	}
-	win->id = wid;
-	win->damage = xcb_generate_id(X);
-	xcb_damage_create(X, win->damage, win->id,
-					XCB_DAMAGE_REPORT_LEVEL_NON_EMPTY);
-	win->region = xcb_generate_id(X);
-	xcb_xfixes_create_region_from_window(X, win->region, win->id,
-							XCB_SHAPE_SK_BOUNDING);
-	xcb_change_window_attributes(X, win->id, XCB_CW_EVENT_MASK, &val);
-	win->pixmap = XCB_NONE;
-	win->picture = XCB_NONE;
-	win->opacity = get_opacity(win->id);
-	win->alpha = XCB_NONE;
-	win->next = *list;
-	*list = win;
-	return win;
+	return w;
 }
 
-int remove_win(struct window **list, struct window *win)
+void remove_win(struct window **list, struct window *w)
 {
 	struct window **prev;
 
-	/* unhook */
 	for (prev = list; *prev; prev = &(*prev)->next)
-		if (*prev == win)
+		if (*prev == w)
 			break;
-	*prev = win->next;
-	xcb_damage_destroy(X, win->damage);
-	xcb_xfixes_destroy_region(X, win->region);
-	if (win->pixmap != XCB_NONE)
-		xcb_free_pixmap(X, win->pixmap);
-	if (win->picture != XCB_NONE)
-		xcb_render_free_picture(X, win->picture);
-	if (win->alpha != XCB_NONE)
-		xcb_render_free_picture(X, win->alpha);
-	free(win);
-	return 0;
+	*prev = w->next;
+	xcb_damage_destroy(X, w->damage);
+	xcb_xfixes_destroy_region(X, w->region);
+	if (w->pixmap)
+		xcb_free_pixmap(X, w->pixmap);
+	if (w->picture)
+		xcb_render_free_picture(X, w->picture);
+	if (w->alpha)
+		xcb_render_free_picture(X, w->alpha);
+	free(w);
 }
 
-void restack_win(struct window **list, struct window *win, xcb_window_t sid)
+void restack_win(struct window **list, struct window *w, xcb_window_t wid)
 {
 	struct window **prev;
 
-	/* unhook */
 	for (prev = list; *prev; prev = &(*prev)->next)
-		if (*prev == win)
+		if (*prev == w)
 			break;
-	*prev = win->next;
-	/* rehook */
+	*prev = w->next;
 	for (prev = list; *prev; prev = &(*prev)->next)
-		if ((*prev)->id == sid)
+		if ((*prev)->id == wid)
 			break;
-	win->next = *prev;
-	*prev = win;
+	w->next = *prev;
+	*prev = w;
 }
 
 int add_winvec(struct window **list, xcb_window_t wid[], int len)
 {
-	xcb_get_window_attributes_cookie_t *ack;
-	xcb_get_geometry_cookie_t *gck;
-	xcb_get_window_attributes_reply_t *ar;
-	xcb_get_geometry_reply_t *gr;
-	struct window *win;
+	xcb_get_window_attributes_cookie_t ack[len];
+	xcb_get_geometry_cookie_t gck[len];
+	struct window *w;
 	int i, n = 0;
 
-	ack = malloc(sizeof(ack) * len);
-	gck = malloc(sizeof(gck) * len);
-	if (!ack || !gck) {
-		if (ack)
-			free(ack);
-		if (gck)
-			free(gck);
-		fprintf(stderr, "add_tree: can't malloc\n");
-		return -1;
-	}
 	for (i = 0; i < len; ++i) {
 		ack[i] = xcb_get_window_attributes_unchecked(X, wid[i]);
 		gck[i] = xcb_get_geometry_unchecked(X, wid[i]);
 	}
 	for (i = 0; i < len; ++i) {
-		ar = xcb_get_window_attributes_reply(X, ack[i], NULL);
-		gr = xcb_get_geometry_reply(X, gck[i], NULL);
-		if (!ar || !gr) {
-			if (ar)
+		xcb_get_window_attributes_reply_t *ar;
+		xcb_get_geometry_reply_t *gr;
+
+		if ((w = add_win(list, wid[i])) != NULL) {
+			ar = xcb_get_window_attributes_reply(X, ack[i], NULL);
+			gr = xcb_get_geometry_reply(X, gck[i], NULL);
+			if (ar && gr) {
+				w->visual = ar->visual;
+				w->_class = ar->_class;
+				w->map_state = ar->map_state;
+				w->x = gr->x;
+				w->y = gr->y;
+				w->width = gr->width;
+				w->height = gr->height;
+				w->border_width = gr->border_width;
 				free(ar);
-			if (gr)
 				free(gr);
-			fprintf(stderr, "add_winvec: can't get attributes of "
-							"window %u\n", wid[i]);
-			continue;
+				++n;
+			} else {
+				if (ar)
+					free(ar);
+				if (gr)
+					free(gr);
+				remove_win(list, w);
+				continue;
+			}
 		}
-		if (ar->_class == XCB_WINDOW_CLASS_INPUT_OUTPUT &&
-				(win = add_win(list, wid[i])) != NULL) {
-			win->visual = ar->visual;
-			win->map_state = ar->map_state;
-			win->x = gr->x;
-			win->y = gr->y;
-			win->width = gr->width;
-			win->height = gr->height;
-			win->border_width = gr->border_width;
-			++n;
-			debugf("add_winvec: window %u on stack\n", win->id);
-		}
-		free(ar);
-		free(gr);
 	}
-	free(ack);
-	free(gck);
 	debugf("add_winvec: added %d of %d windows to stack\n", n, len);
 	return n;
 }

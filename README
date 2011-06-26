@@ -18,8 +18,3 @@ root):
 
 	make clean install
 
-
-TODO
-----
-* Add some command-line arguments
-

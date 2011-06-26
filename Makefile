@@ -1,21 +1,21 @@
 include config.mk
 
+OBJECTS = xray.o window.o util.o event.o
+
 all: xray
-	@mkdir -p ./bin
-	@mv xray ./bin
 
-xray: xray.o util.o window.o event.o
+xray: ${OBJECTS}
 
-xray.o: xray.h
+${OBJECTS}: xray.h
 
 clean:
 	@echo cleaning
-	@rm -f ./bin/xray xray.o window.o event.o util.o
+	@rm -f xray ${OBJECTS}
 
-install: all
+install: xray
 	@echo installing executable file to ${PREFIX}/bin
 	@mkdir -p ${PREFIX}/bin
-	@cp -f ./bin/xray ${PREFIX}/bin
+	@cp -f xray ${PREFIX}/bin
 
 uninstall:
 	@echo removing executable file from ${PREFIX}/bin

@@ -27,6 +27,8 @@
 extern xcb_connection_t *X;
 
 extern xcb_render_pictformat_t pict_a_8, pict_rgb_24, pict_argb_32;
+extern double opacity;
+extern xcb_render_picture_t alpha_picture;
 
 extern xcb_atom_t _XROOTPMAP_ID;
 extern xcb_atom_t _NET_WM_WINDOW_OPACITY;
@@ -46,30 +48,32 @@ extern struct root {
 
 struct window {
 	xcb_window_t id;
+	xcb_visualid_t visual;
+	uint16_t _class;
+	uint8_t map_state;
 	int16_t x, y;
 	uint16_t width, height;
 	uint16_t border_width;
-	xcb_visualid_t visual;
-	uint8_t map_state;
 	xcb_damage_damage_t damage;
 	xcb_xfixes_region_t region;
 	xcb_pixmap_t pixmap;
 	xcb_render_picture_t picture;
-	uint32_t opacity;
+	double opacity;
 	xcb_render_picture_t alpha;
 	struct window *prev;
 	struct window *next;
 };
 
 void add_damaged_region(struct root *root, xcb_xfixes_region_t region);
-uint32_t get_opacity(xcb_window_t wid);
+double get_window_opacity(xcb_window_t wid);
+xcb_render_picture_t get_alpha_picture(double o);
 
 /* window.c */
 struct window *find_win(struct window *list, xcb_window_t wid);
 struct window *add_win(struct window **list, xcb_window_t wid);
-int remove_win(struct window **list, struct window *win);
-void restack_win(struct window **list, struct window *win, xcb_window_t sib);
-void init_win(struct window *win, xcb_get_window_attributes_reply_t *ar,
+void remove_win(struct window **list, struct window *w);
+void restack_win(struct window **list, struct window *w, xcb_window_t sib);
+void init_win(struct window *w, xcb_get_window_attributes_reply_t *ar,
 						xcb_get_geometry_reply_t *gr);
 int add_winvec(struct window **list, xcb_window_t wid[], int len);
 
@@ -88,4 +92,5 @@ void damage_notify(xcb_damage_notify_event_t *e);
 extern xcb_generic_error_t *error;
 unsigned check_error(const char *s);
 unsigned check_cookie(xcb_void_cookie_t ck);
+void init_input_output_window(struct window *w);
 

@@ -87,10 +87,8 @@ static void init_atoms(void)
 
 static xcb_render_picture_t get_background(xcb_window_t wid)
 {
-	/* TODO: rewrite this instead of paint it gray */
 	xcb_pixmap_t pid;
 	xcb_render_picture_t pict;
-	xcb_render_pictforminfo_t *form;
 	uint32_t val = 1;
 	int fill = 0;
 	xcb_get_property_cookie_t ck;
@@ -109,10 +107,7 @@ static xcb_render_picture_t get_background(xcb_window_t wid)
 		++fill;
 	}
 	pict = xcb_generate_id(X);
-	form = xcb_render_util_find_standard_format(
-					xcb_render_util_query_formats(X),
-					XCB_PICT_STANDARD_RGB_24);
-	xcb_render_create_picture(X, pict, pid, form->id,
+	xcb_render_create_picture(X, pict, pid, pict_rgb_24,
 						XCB_RENDER_CP_REPEAT, &val);
 	if (fill) {
 		xcb_render_color_t c = { 0x3f3f, 0x3f3f, 0x3f3f, 0xffff };
@@ -138,15 +133,14 @@ static void paint_background(struct root *r)
 static int scan_children(xcb_window_t wid, struct window **list)
 {
 	xcb_query_tree_reply_t *r;
-	int len = -1;
 
 	r = xcb_query_tree_reply(X, xcb_query_tree_unchecked(X, wid), NULL);
-	if (r != NULL) {
-		len = add_winvec(list, xcb_query_tree_children(r),
-							r->children_len);
+	if (r) {
+		add_winvec(list, xcb_query_tree_children(r), r->children_len);
 		free(r);
+		return 0;
 	}
-	return len;
+	return -1;
 }
 
 static int setup_root(xcb_screen_t *s, struct root *r)
@@ -156,6 +150,17 @@ static int setup_root(xcb_screen_t *s, struct root *r)
 	xcb_void_cookie_t ck;
 
 	r->id = s->root;
+	mask = XCB_CW_EVENT_MASK;
+	vals[0] = XCB_EVENT_MASK_STRUCTURE_NOTIFY |
+					XCB_EVENT_MASK_SUBSTRUCTURE_NOTIFY |
+					XCB_EVENT_MASK_PROPERTY_CHANGE;
+	xcb_change_window_attributes(X, r->id, mask, vals);
+	mask = XCB_COMPOSITE_REDIRECT_MANUAL;
+	ck = xcb_composite_redirect_subwindows_checked(X, r->id, mask);
+	if (check_cookie(ck) != 0) {
+		fprintf(stderr, "another composite manager is running\n");
+		return -1;
+	}
 	r->depth = s->root_depth;
 	r->width = s->width_in_pixels;
 	r->height = s->height_in_pixels;
@@ -185,18 +190,7 @@ static int setup_root(xcb_screen_t *s, struct root *r)
 	r->background = get_background(r->id);
 	r->damaged = 0;
 	r->window_list = NULL;
-	mask = XCB_CW_EVENT_MASK;
-	vals[0] = XCB_EVENT_MASK_STRUCTURE_NOTIFY |
-					XCB_EVENT_MASK_SUBSTRUCTURE_NOTIFY |
-					XCB_EVENT_MASK_PROPERTY_CHANGE;
-	xcb_change_window_attributes(X, r->id, mask, vals);
-	ck = xcb_composite_redirect_subwindows_checked(X, r->id,
-						XCB_COMPOSITE_REDIRECT_MANUAL);
-	if (check_cookie(ck) != 0)
-		return -1;
-	if (scan_children(s->root, &r->window_list) < 0)
-		fprintf(stderr, "setup_root: no windows on stack\n");
-	return 0;
+	return scan_children(r->id, &r->window_list);;
 }
 
 void add_damaged_region(struct root *r, xcb_xfixes_region_t reg)
@@ -205,26 +199,27 @@ void add_damaged_region(struct root *r, xcb_xfixes_region_t reg)
 	r->damaged++;
 }
 
-uint32_t get_opacity(xcb_window_t wid)
+double get_window_opacity(xcb_window_t wid)
 {
 	xcb_get_property_cookie_t ck;
 	xcb_get_property_reply_t *r;
 	uint32_t val = OPAQUE;
 
+	if (opacity != -1) {
+		return opacity;
+	}
 	ck = xcb_get_property_unchecked(X, 0, wid, _NET_WM_WINDOW_OPACITY,
 						XCB_ATOM_CARDINAL, 0L, 1L);
 	r = xcb_get_property_reply(X, ck, NULL);
-	if (r && r->value_len && r->format == 32)
-		val = *(uint32_t *) xcb_get_property_value(r);
-	if (r)
+	if (r) {
+		if (r->value_len && r->format == 32)
+			val = *(uint32_t *) xcb_get_property_value(r);
 		free(r);
-	/*
-	debugf("get_opacity: %g\n", (double) val / OPAQUE);
-	*/
-	return val;
+	}
+	return (double) val / OPAQUE;
 }
 
-static xcb_render_picture_t get_alpha_picture(double o)
+xcb_render_picture_t get_alpha_picture(double o)
 {
 	xcb_pixmap_t pid;
 	xcb_render_picture_t pict;
@@ -242,63 +237,63 @@ static xcb_render_picture_t get_alpha_picture(double o)
 	return pict;
 }
 
-static struct window *sanitize_window_list(struct root *r, struct window *win)
+static struct window *sanitize_window_list(struct root *r, struct window *w)
 {
 	struct window *tmp;
 
-	for (tmp = NULL; win != NULL; win = win->next) {
-		if (win->map_state == XCB_MAP_STATE_UNMAPPED ||
-							OFFSCREEN(win, root))
+	for (tmp = NULL; w != NULL; w = w->next) {
+		if (w->_class == XCB_WINDOW_CLASS_INPUT_ONLY ||
+				w->map_state == XCB_MAP_STATE_UNMAPPED ||
+							OFFSCREEN(w, root))
 			continue;
-		if (win->picture == XCB_NONE) {
+		if (!w->picture) {
 			xcb_render_pictvisual_t *pv;
 			uint32_t mask = XCB_RENDER_CP_SUBWINDOW_MODE;
 			uint32_t vals = XCB_SUBWINDOW_MODE_INCLUDE_INFERIORS;
 
-			if (win->pixmap == XCB_NONE) {
-				win->pixmap = xcb_generate_id(X);
-				xcb_composite_name_window_pixmap(X, win->id,
-								win->pixmap);
+			if (!w->pixmap) {
+				w->pixmap = xcb_generate_id(X);
+				xcb_composite_name_window_pixmap(X, w->id,
+								w->pixmap);
 			}
-			win->picture = xcb_generate_id(X);
+			w->picture = xcb_generate_id(X);
 			pv = xcb_render_util_find_visual_format(
 					xcb_render_util_query_formats(X),
-					win->visual);
-			xcb_render_create_picture(X, win->picture,
-					win->pixmap, pv->format, mask, &vals);
+					w->visual);
+			xcb_render_create_picture(X, w->picture,
+					w->pixmap, pv->format, mask, &vals);
 		}
-		if (win->opacity != OPAQUE) {
-			if (win->alpha == XCB_NONE)
-				win->alpha = get_alpha_picture(
-						(double) win->opacity / OPAQUE);
+		if (w->opacity != OPAQUE) {
+			if (!w->alpha)
+				w->alpha = get_alpha_picture(w->opacity);
 		} else {
-			if (win->alpha != XCB_NONE) {
-				xcb_render_free_picture(X, win->alpha);
-				win->alpha = XCB_NONE;
+			if (w->alpha) {
+				xcb_render_free_picture(X, w->alpha);
+				w->alpha = XCB_NONE;
 			}
 		}
 		/* this is not realy needed... or is it? */
-		xcb_xfixes_intersect_region(X, win->region, r->damage,
-								win->region);
-		win->prev = tmp;
-		tmp = win;
+		xcb_xfixes_intersect_region(X, w->region, r->damage,
+								w->region);
+		w->prev = tmp;
+		tmp = w;
 	}
 	return tmp;
 }
 
 static void paint(struct root *r)
 {
-	struct window *win;
+	struct window *w;
 
 	paint_background(r);
-	win = sanitize_window_list(r, r->window_list);
-	for (; win != NULL; win = win->prev) {
+	w = sanitize_window_list(r, r->window_list);
+	for (; w != NULL; w = w->prev) {
 		xcb_xfixes_set_picture_clip_region(X, r->picture_buffer,
-					win->region, win->x + win->border_width,
-					win->y + win->border_width);
-		xcb_render_composite(X, XCB_RENDER_PICT_OP_OVER, win->picture,
-				win->alpha, r->picture_buffer, 0, 0, 0, 0,
-				win->x, win->y, WIDTH(win), HEIGHT(win));
+					w->region, w->x + w->border_width,
+					w->y + w->border_width);
+		xcb_render_composite(X, XCB_RENDER_PICT_OP_OVER, w->picture,
+				w->alpha, r->picture_buffer, 0, 0, 0, 0,
+				w->x, w->y, WIDTH(w), HEIGHT(w));
 	}
 	xcb_xfixes_set_picture_clip_region(X, r->picture_buffer, r->damage,
 									0, 0);
@@ -314,14 +309,14 @@ static void paint(struct root *r)
 static void handle_event(xcb_generic_event_t *e)
 {
 	switch (e->response_type) {
-	case XCB_CREATE_NOTIFY:		HANDLE(create_notify, e);	break;
-	case XCB_DESTROY_NOTIFY:	HANDLE(destroy_notify, e);	break;
-	case XCB_UNMAP_NOTIFY:		HANDLE(unmap_notify, e);	break;
-	case XCB_MAP_NOTIFY:		HANDLE(map_notify, e);		break;
-	case XCB_REPARENT_NOTIFY:	HANDLE(reparent_notify, e);	break;
-	case XCB_CONFIGURE_NOTIFY:	HANDLE(configure_notify, e);	break;
-	case XCB_CIRCULATE_NOTIFY:	HANDLE(circulate_notify, e);	break;
-	case XCB_PROPERTY_NOTIFY:	HANDLE(property_notify, e);	break;
+	case XCB_CREATE_NOTIFY: HANDLE(create_notify, e); break;
+	case XCB_DESTROY_NOTIFY: HANDLE(destroy_notify, e); break;
+	case XCB_UNMAP_NOTIFY: HANDLE(unmap_notify, e); break;
+	case XCB_MAP_NOTIFY: HANDLE(map_notify, e); break;
+	case XCB_REPARENT_NOTIFY: HANDLE(reparent_notify, e); break;
+	case XCB_CONFIGURE_NOTIFY: HANDLE(configure_notify, e); break;
+	case XCB_CIRCULATE_NOTIFY: HANDLE(circulate_notify, e); break;
+	case XCB_PROPERTY_NOTIFY: HANDLE(property_notify, e); break;
 	default:
 		if (e->response_type == damage_event) {
 			HANDLE(damage_notify, e);
@@ -351,19 +346,59 @@ static int loop(void)
 	return 0;
 }
 
+static void usage(const char *name)
+{
+	printf("Usage: %s [ -o opacity ]\n", name);
+}
+
+double opacity = -1;
+xcb_render_picture_t alpha_picture;
+
+int parse_args(int argc, char *argv[])
+{
+	int i;
+
+	for (i = 1; i < argc; ++i) {
+		if (argv[i][0] != '-' || argv[i][2] != '\0')
+			goto exit;
+		switch (argv[i][1]) {
+		case 'o':
+			if (++i < argc) {
+				opacity = atof(argv[i]);
+			} else {
+				fprintf(stderr, "-o requires an argument\n");
+				return -1;
+			}
+			break;
+		case 'v':
+			printf("%s: \n", argv[0]);
+			break;
+		default:
+			break;
+		}
+	}
+	return 0;
+exit:
+	fprintf(stderr, "invalid argument '%s'\n", argv[i]);
+	return -1;
+}
+
 xcb_connection_t *X;
 struct root *root;
 xcb_render_pictformat_t pict_a_8, pict_rgb_24, pict_argb_32;
-xcb_render_picture_t alpha_picture;
 
-int main(void)
+int main(int argc, char *argv[])
 {
 	xcb_screen_t *s;
 
+	if (parse_args(argc, argv) != 0) {
+		usage(argv[0]);
+		return 1;
+	}
 	X = xcb_connect(NULL, NULL);
 	if (xcb_connection_has_error(X)) {
 		fprintf(stderr, "can't connect X\n");
-		return -1;
+		return 1;
 	}
 	xcb_prefetch_extension_data(X, &xcb_render_id);
 	xcb_prefetch_extension_data(X, &xcb_xfixes_id);
@@ -383,7 +418,7 @@ int main(void)
 	init_atoms();
 	root = malloc(sizeof(struct root));
 	if (root == NULL || setup_root(s, root) != 0)
-		return -1;
+		return 1;
 	xcb_flush(X);
 	loop();
 	return 0;
